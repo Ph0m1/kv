@@ -6,7 +6,7 @@ import (
 )
 
 // 按顺序遍历 SSTable
-type Iterator struct {
+type sstableIterator struct {
 	r *Reader // 底层的 SSTable Reader
 
 	blockIndex int            // 当前正在读取的 Data Block 的索引
@@ -25,25 +25,8 @@ type blockIterator struct {
 	isTombstone bool
 }
 
-// NewIterator 创建一个 SSTable 迭代器
-func (r *Reader) NewIterator() (*Iterator, error) {
-	it := &Iterator{
-		r:          r,
-		blockIndex: -1, // 尚未开始
-	}
-
-	// 立刻加载第一个 block
-	if err := it.loadBlock(0); err != nil {
-		if err == io.EOF {
-			return it, nil
-		}
-		return nil, err
-	}
-	return it, nil
-}
-
 // loadBlock 加载第 blockIdx 个 Data Block 并为其创建 blockIterator
-func (it *Iterator) loadBlock(blockIdx int) error {
+func (it *sstableIterator) loadBlock(blockIdx int) error {
 	it.r.lock.RLock()
 	defer it.r.lock.RUnlock()
 
@@ -109,13 +92,13 @@ func (bi *blockIterator) Next() bool {
 
 // Next (SSTable Iterator) 移动到 SSTable 中的下一个条目
 // 这是 Compactor 调用的主要方法
-func (it *Iterator) Next() bool {
+func (it *sstableIterator) Next() bool {
 	if it.blockIter == nil {
 		return false // 迭代完成
 	}
 
 	// 尝试在当前 Data Block 中移动
-	if it.blockIter.Next(){
+	if it.blockIter.Next() {
 		return true // 找到下一个条目
 	}
 
@@ -133,7 +116,7 @@ func (it *Iterator) Next() bool {
 }
 
 // Key 返回当前条目的 Key
-func (it *Iterator) Key() []byte {
+func (it *sstableIterator) Key() []byte {
 	if it.blockIter == nil {
 		return nil
 	}
@@ -141,7 +124,7 @@ func (it *Iterator) Key() []byte {
 }
 
 // Value 返回当前条目的 Value
-func (it *Iterator) Value() []byte {
+func (it *sstableIterator) Value() []byte {
 	if it.blockIter == nil {
 		return nil
 	}
@@ -149,7 +132,7 @@ func (it *Iterator) Value() []byte {
 }
 
 // IsTombstone 返回当前条目是否为墓碑
-func (it *Iterator) IsTombstone() bool {
+func (it *sstableIterator) IsTombstone() bool {
 	if it.blockIter == nil {
 		return false
 	}
@@ -157,7 +140,7 @@ func (it *Iterator) IsTombstone() bool {
 }
 
 // Close 释放迭代器资源 (目前无需操作，但保持良好习惯)
-func (it *Iterator) Close() error {
+func (it *sstableIterator) Close() error {
 	it.blockIter = nil
 	it.r = nil
 	return nil

@@ -200,7 +200,7 @@ func (w *WAL) Replay(replyFunc func(key, value []byte, isTombstone bool) error) 
 }
 
 // CLose 关闭 WAL 文件
-func (w *WAL) CLose() error {
+func (w *WAL) Close() error {
 	w.lock.Lock()
 	defer w.lock.Unlock()
 

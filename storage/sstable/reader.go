@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 )
@@ -104,6 +105,23 @@ func NewReader(filePath string) (*Reader, error) {
 		index:    indexEntries,
 		fileSize: fileSize,
 	}, nil
+}
+
+// NewIterator 创建一个 SSTable 迭代器
+func (r *Reader) NewIterator() (*sstableIterator, error) {
+	it := &sstableIterator{
+		r:          r,
+		blockIndex: -1, // 尚未开始
+	}
+
+	// 立刻加载第一个 block
+	if err := it.loadBlock(0); err != nil {
+		if err == io.EOF {
+			return it, nil
+		}
+		return nil, err
+	}
+	return it, nil
 }
 
 // Get 查找一个键

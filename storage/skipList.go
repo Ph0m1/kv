@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const (
-	randomLevel = 0.5
+	randomLevel     = 0.25
+	defaultMaxLevel = 18
 )
 
 type Node struct {
@@ -57,6 +59,9 @@ type SkipList struct {
 
 	maxLevel     int
 	currentLevel int
+
+	// 跟踪 Memtable 的大致内存占用(bytes)
+	size atomic.Int64
 }
 
 func NewSkipList(maxLevel int) *SkipList {
@@ -65,6 +70,7 @@ func NewSkipList(maxLevel int) *SkipList {
 		rand:         rand.New(rand.NewSource(time.Now().UnixNano())),
 		maxLevel:     maxLevel,
 		currentLevel: 1,
+		size:         atomic.Int64{},
 	}
 }
 
@@ -127,6 +133,12 @@ func (sl *SkipList) Put(key []byte, value []byte, isTombstone bool) {
 
 	// 键已存在
 	if current != nil && bytes.Compare(current.key, key) == 0 {
+		// 计算大小变化
+		oldSize := int64(len(current.value))
+		newSize := int64(len(value))
+		sizeDelta := newSize - oldSize
+		sl.size.Add(sizeDelta)
+
 		current.value = value
 		current.isTombstone = isTombstone
 		return
@@ -146,6 +158,11 @@ func (sl *SkipList) Put(key []byte, value []byte, isTombstone bool) {
 
 	n := newNode(key, value, newLevel, isTombstone)
 
+	// 更新大小
+	// 暂时忽略 Tombstone 和 指针
+	entrySize := int64(len(key) + len(value))
+	sl.size.Add(entrySize)
+
 	// 插入节点，更新指针
 	// 从 Level 0 到 newLevel-1
 	for i := 0; i < newLevel; i++ {
@@ -154,6 +171,11 @@ func (sl *SkipList) Put(key []byte, value []byte, isTombstone bool) {
 		// 前驱 (update[i]) 的 forward[i] 指向新节点
 		update[i].forward[i] = n
 	}
+}
+
+// ApproximateSize 返回 Memtable 占用的大致内存（字节）
+func (sl *SkipList) ApproximateSize() int64 {
+	return sl.size.Load()
 }
 
 // 迭代器

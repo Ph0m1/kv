@@ -15,8 +15,6 @@ import (
 	"bufio"
 	"encoding/binary"
 	"os"
-
-	"github.com/ph0m1/kv/storage"
 )
 
 const (
@@ -108,7 +106,7 @@ func (w *Writer) writeEntry(key, value []byte, isTombstone bool) {
 
 // Flush 迭代器
 // 从 Memtable 迭代器中读取所有数据构建 SSTable
-func (w *Writer) Flush(iter *storage.SkipListIterator) error {
+func (w *Writer) Flush(iter Iterator) error {
 	for iter.Next() {
 		// 将 KV 写如当前 Data Block buf
 		w.writeEntry(iter.Key(), iter.Value(), iter.IsTombstone())
