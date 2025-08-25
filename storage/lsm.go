@@ -2,11 +2,8 @@ package storage
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -38,7 +35,8 @@ type LSM struct {
 	// L0 SSTables
 	// L0 层文件允许键重叠，所以用切片
 	// !! 关键: 索引 0 是最旧的, len-1 是最新的
-	l0SSTables []*sstable.Reader
+	// l0SSTables []*sstable.Reader
+	levelManager *LevelManager
 
 	// 引擎的主锁
 	lock sync.RWMutex
@@ -65,7 +63,6 @@ func NewLSM(dirPath string) (*LSM, error) {
 		flushChan:         make(chan flushTask, 1), // 缓冲为1
 		flushDone:         make(chan struct{}),
 		stopChan:          make(chan struct{}),
-		l0SSTables:        make([]*sstable.Reader, 0),
 	}
 
 	// 打开 WAL
@@ -86,33 +83,40 @@ func NewLSM(dirPath string) (*LSM, error) {
 		return nil, fmt.Errorf("failed to replay WAL: %w", err)
 	}
 
-	// 3. 加载 L0 SSTables
-	// 我们需要一种方法来命名 SSTable 文件，例如 0001.sst, 0002.sst
-	files, err := ioutil.ReadDir(dirPath)
+	// // 加载 L0 SSTables
+	// // 我们需要一种方法来命名 SSTable 文件，例如 0001.sst, 0002.sst
+	// files, err := ioutil.ReadDir(dirPath)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("failed to read data dir: %w", err)
+	// }
+
+	// var sstFiles []string
+	// for _, f := range files {
+	// 	if strings.HasSuffix(f.Name(), ".sst") {
+	// 		sstFiles = append(sstFiles, f.Name())
+	// 	}
+	// }
+	// // 按文件名排序 (0001.sst, 0002.sst, ...)
+	// sort.Strings(sstFiles)
+
+	// for _, fileName := range sstFiles {
+	// 	sstPath := filepath.Join(dirPath, fileName)
+	// 	reader, err := sstable.NewReader(sstPath)
+	// 	if err != nil {
+	// 		// 文件可能损坏，需要处理
+	// 		return nil, fmt.Errorf("failed to load sstable %s: %w", fileName, err)
+	// 	}
+	// 	lsm.l0SSTables = append(lsm.l0SSTables, reader)
+	// }
+
+	// 初始化 levelManager
+	lm, err := NewLevelManager(dirPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read data dir: %w", err)
+		return nil, fmt.Errorf("failed to init level manager: %w", err)
 	}
+	lsm.levelManager = lm
 
-	var sstFiles []string
-	for _, f := range files {
-		if strings.HasSuffix(f.Name(), ".sst") {
-			sstFiles = append(sstFiles, f.Name())
-		}
-	}
-	// 按文件名排序 (0001.sst, 0002.sst, ...)
-	sort.Strings(sstFiles)
-
-	for _, fileName := range sstFiles {
-		sstPath := filepath.Join(dirPath, fileName)
-		reader, err := sstable.NewReader(sstPath)
-		if err != nil {
-			// 文件可能损坏，需要处理
-			return nil, fmt.Errorf("failed to load sstable %s: %w", fileName, err)
-		}
-		lsm.l0SSTables = append(lsm.l0SSTables, reader)
-	}
-
-	// 4. 启动后台刷写 Goroutine
+	// 启动后台刷写 Goroutine
 	go lsm.flushWorker()
 
 	return lsm, nil
@@ -126,17 +130,22 @@ func (lsm *LSM) flushWorker() {
 			return
 
 		case task := <-lsm.flushChan: // <-- 接收 flushTask
-			// 1. 生成新文件名
+			// 生成新文件名
 			// ... (逻辑不变, 使用序号或时间戳命名 .sst) ...
-			lsm.lock.RLock()
-			newSSTNum := len(lsm.l0SSTables) + 1 // (这个命名逻辑我们稍后会改进)
-			lsm.lock.RUnlock()
+			// lsm.lock.RLock()
+			// newSSTNum := len(lsm.l0SSTables) + 1 // (这个命名逻辑我们稍后会改进)
+			// lsm.lock.RUnlock()
+			// newSSTPath := filepath.Join(
+			// 	lsm.dirPath,
+			// 	fmt.Sprintf("%04d.sst", newSSTNum),
+			// )
+			newSSTNum := lsm.levelManager.NextFileNumber()
 			newSSTPath := filepath.Join(
 				lsm.dirPath,
-				fmt.Sprintf("%04d.sst", newSSTNum),
+				fmt.Sprintf("%04d.sst", newSSTNum), // 保证 4 位补零
 			)
 
-			// 2. 执行刷写
+			// 执行刷写
 			writer, err := sstable.NewWriter(newSSTPath)
 			if err != nil {
 				// ... (错误处理) ...
@@ -162,7 +171,7 @@ func (lsm *LSM) flushWorker() {
 
 			// 4. 将新 Reader 添加到 L0
 			lsm.lock.Lock()
-			lsm.l0SSTables = append(lsm.l0SSTables, reader)
+			lsm.levelManager.AddL0(reader)
 			lsm.immutableMemtable = nil
 			lsm.lock.Unlock()
 
@@ -274,7 +283,7 @@ func (lsm *LSM) Get(key []byte) ([]byte, bool, error) {
 	lsm.lock.RLock()
 	defer lsm.lock.RUnlock()
 
-	// 1. 查 Active Memtable (最新)
+	// 查 Active Memtable (最新)
 	val, tomb, found := lsm.activeMemtable.Get(key)
 	if found {
 		if tomb {
@@ -283,7 +292,7 @@ func (lsm *LSM) Get(key []byte) ([]byte, bool, error) {
 		return val, true, nil
 	}
 
-	// 2. 查 Immutable Memtable (次新)
+	// 查 Immutable Memtable (次新)
 	if lsm.immutableMemtable != nil {
 		val, tomb, found = lsm.immutableMemtable.Get(key)
 		if found {
@@ -294,10 +303,14 @@ func (lsm *LSM) Get(key []byte) ([]byte, bool, error) {
 		}
 	}
 
-	// 3. 查 L0 SSTables (从新到旧)
+	// 查 L0 SSTables (从新到旧)
+	// l0Readers 是一个快照
+	l0Readers := lsm.levelManager.GetL0Readers()
+
+	lsm.lock.RUnlock() // Get 的主要锁在这里释放
 	// 我们在 L0 列表的末尾追加新文件，所以倒序遍历
-	for i := len(lsm.l0SSTables) - 1; i >= 0; i-- {
-		reader := lsm.l0SSTables[i]
+	for i := len(l0Readers) - 1; i >= 0; i-- {
+		reader := l0Readers[i]
 		val, tomb, found, err := reader.Get(key)
 		if err != nil {
 			return nil, false, fmt.Errorf("error reading sstable %d: %w", i, err)
@@ -311,6 +324,8 @@ func (lsm *LSM) Get(key []byte) ([]byte, bool, error) {
 		}
 	}
 
-	// 4. 未找到
+	// (TODO) 查询 L1 ... LN (目前 L1+ 为空)
+
+	// 未找到
 	return nil, false, nil
 }
