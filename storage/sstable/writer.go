@@ -63,6 +63,12 @@ func NewWriter(filePath string) (*Writer, error) {
 	}, nil
 }
 
+// CurrentSize 返回 Writer 当前写入的总字节数
+func (w *Writer) CurrentSize() int64 {
+	// offset 字段就是我们正在跟踪的文件总大小
+	return w.offset
+}
+
 // Write (key, value, isTombstone)
 // 这是我们需要定义的数据在 Data Block 中的格式 (Entry Format)
 // 简单格式: [Tombstone(1B)] [KeyLen(4B)] [ValLen(4B)] [Key] [Value]
@@ -102,6 +108,11 @@ func (w *Writer) writeEntry(key, value []byte, isTombstone bool) {
 	w.currentBlockBuffer = append(w.currentBlockBuffer, entryBuf...)
 	w.currentBlockKeys += 1
 	w.blockLastKey = key
+}
+
+// Writer
+func (w *Writer) Write(key, value []byte, isTombstone bool) {
+	w.writeEntry(key, value, isTombstone)
 }
 
 // Flush 迭代器

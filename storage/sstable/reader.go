@@ -20,6 +20,11 @@ type Reader struct {
 
 	// 文件的总大小，校验
 	fileSize int64
+	filePath string
+
+	// 缓存文件的键范围
+	minKey []byte
+	maxKey []byte
 }
 
 // NewReader 打开一个 SSTable 文件 并加载索引
@@ -100,10 +105,40 @@ func NewReader(filePath string) (*Reader, error) {
 		})
 	}
 
+	// 缓存 minKey 和 maxKey
+	var minKey, maxKey []byte
+
+	if len(indexEntries) > 0 {
+		maxKey = indexEntries[len(indexEntries)-1].lastKey
+
+		firstBlockEntry := indexEntries[0]
+
+		// 创建一个临时 Reader
+		tempReader := &Reader{f: f}
+		firstBlockBuf, err := tempReader.readBlock(firstBlockEntry.offset, firstBlockEntry.length)
+
+		if err != nil {
+			f.Close()
+			return nil, fmt.Errorf("failed to read first block for minKwy: %w", err)
+		}
+
+		if len(firstBlockBuf) > 5 { // 1(tomb) + 4(keyLen)
+			// 跳过 Tombstone (1)
+			keyLen := binary.LittleEndian.Uint32(firstBlockBuf[1:5])
+			if len(firstBlockBuf) >= int(9+keyLen) { // 1+4+4+keyLen
+				// 跳过 1(tomb) + 4(keyLen) + 4(valLen)
+				minKey = firstBlockBuf[9 : 9+keyLen]
+			}
+		}
+	}
+
 	return &Reader{
 		f:        f,
 		index:    indexEntries,
 		fileSize: fileSize,
+		filePath: filePath,
+		minKey:   minKey,
+		maxKey:   maxKey,
 	}, nil
 }
 
@@ -140,10 +175,9 @@ func (r *Reader) Get(key []byte) ([]byte, bool, bool, error) {
 	targetBlock := r.index[blockIdx]
 
 	// 从磁盘读取整个 Data Block
-	blockBuf := make([]byte, targetBlock.length)
-	_, err := r.f.ReadAt(blockBuf, targetBlock.offset)
+	blockBuf, err := r.readBlock(targetBlock.offset, targetBlock.length) // <-- 修改
 	if err != nil {
-		return nil, false, false, fmt.Errorf("failed to read data block: %w", err)
+		return nil, false, false, err // <-- 修改
 	}
 
 	// 在 Data Block 内部进行线性扫描查找（也可以是二分查找，取决于实现复杂度）
@@ -218,9 +252,34 @@ func search(n int, f func(int) bool) int {
 	return i
 }
 
+// readBlock 从磁盘读取一个完整的数据块
+func (r *Reader) readBlock(offset int64, length int) ([]byte, error) {
+	blockBuf := make([]byte, length)
+	_, err := r.f.ReadAt(blockBuf, offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read data block: %w", err)
+	}
+	return blockBuf, nil
+}
+
+// MinKey 返回此 SSTable 中的最小键
+func (r *Reader) MinKey() []byte {
+	return r.minKey
+}
+
+// MaxKey 返回此 SSTable 中的最大键
+func (r *Reader) MaxKey() []byte {
+	return r.maxKey
+}
+
 // Close 关闭文件句柄
 func (r *Reader) Close() error {
 	r.lock.Lock() // 获取写锁，防止在关闭时有读操作
 	defer r.lock.Unlock()
 	return r.f.Close()
+}
+
+// 访问 filePath
+func (r *Reader) FilePath() string {
+	return r.filePath
 }

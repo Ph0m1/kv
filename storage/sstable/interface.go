@@ -5,4 +5,5 @@ type Iterator interface {
 	Key() []byte
 	Value() []byte
 	IsTombstone() bool
+	Close() error
 }

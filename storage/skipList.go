@@ -218,3 +218,7 @@ func (it *SkipListIterator) IsTombstone() bool {
 	}
 	return it.current.isTombstone
 }
+
+func (it *SkipListIterator) Close() error {
+	return nil
+}

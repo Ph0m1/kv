@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,8 @@ const (
 	defaultMemtableSizeLimit = 64 * 1024 * 1024
 	// WAL 文件名
 	walFileName = "wal.log"
+
+	targetSSTableSize = 64 * 1024 * 1024
 )
 
 // flushTask 封装了刷写任务所需的所有信息
@@ -42,9 +45,10 @@ type LSM struct {
 	lock sync.RWMutex
 
 	// 刷写控制
-	flushChan chan flushTask // 通知 flushWorker 工作的通道
-	flushDone chan struct{}  // flushWorker 完成时的信号
-	stopChan  chan struct{}  // 关闭引擎的信号
+	flushChan         chan flushTask // 通知 flushWorker 工作的通道
+	flushDone         chan struct{}  // flushWorker 完成时的信号
+	stopChan          chan struct{}  // 关闭引擎的信号
+	compactionTrigger chan struct{}  // 压缩触发信号
 
 	// 引擎配置
 	dirPath           string // 数据目录
@@ -62,6 +66,7 @@ func NewLSM(dirPath string) (*LSM, error) {
 		memtableSizeLimit: defaultMemtableSizeLimit,
 		flushChan:         make(chan flushTask, 1), // 缓冲为1
 		flushDone:         make(chan struct{}),
+		compactionTrigger: make(chan struct{}),
 		stopChan:          make(chan struct{}),
 	}
 
@@ -118,6 +123,7 @@ func NewLSM(dirPath string) (*LSM, error) {
 
 	// 启动后台刷写 Goroutine
 	go lsm.flushWorker()
+	go lsm.compactorWorker() // 启动压缩器
 
 	return lsm, nil
 }
@@ -169,13 +175,13 @@ func (lsm *LSM) flushWorker() {
 				continue
 			}
 
-			// 4. 将新 Reader 添加到 L0
+			//  将新 Reader 添加到 L0
 			lsm.lock.Lock()
 			lsm.levelManager.AddL0(reader)
 			lsm.immutableMemtable = nil
 			lsm.lock.Unlock()
 
-			// 5. !! 核心：清理旧的 WAL !!
+			//  !! 核心：清理旧的 WAL !!
 			// 这是数据安全的最后一步。
 			// 只有SSTable成功写入并注册后，才能删除对应的WAL。
 			if task.wal != nil {
@@ -186,9 +192,186 @@ func (lsm *LSM) flushWorker() {
 				}
 			}
 
-			// 6. 通知 Put 操作刷写已完成
+			//  通知 Put 操作刷写已完成
 			lsm.flushDone <- struct{}{}
+
+			// 触发压缩检查
+			lsm.triggerCompaction()
 		}
+	}
+}
+
+// runCompaction 执行一次压缩任务
+// 这是 LSM-Tree 的核心归并排序算法
+func (lsm *LSM) runCompaction(task *CompactionTask) ([]*sstable.Reader, error) {
+	// 1. 为所有输入文件创建迭代器
+	iters := make([]sstable.Iterator, len(task.InputFiles))
+	for i, reader := range task.InputFiles {
+		iter, err := reader.NewIterator()
+		if err != nil {
+			// ... (错误处理: 关闭所有已打开的迭代器) ...
+			return nil, fmt.Errorf("failed to create iterator: %w", err)
+		}
+		// *sstable.sstableIterator 隐式满足 sstable.Iterator 接口
+		iters[i] = iter
+	}
+
+	// defer 确保所有迭代器都被关闭
+	defer func() {
+		for _, iter := range iters {
+			if iter != nil { // 确保 iter 不是 nil 接口
+				iter.Close()
+			}
+		}
+	}()
+
+	// 2. 创建并初始化最小堆
+	h := newCompactionHeap(iters)
+	if h.Len() == 0 {
+		return make([]*sstable.Reader, 0), nil // 没有输入，无需压缩
+	}
+
+	// 3. 准备输出 (SSTable Writer)
+	var newReaders []*sstable.Reader
+	// var lastKeyWritten []byte
+
+	newSSTNum := lsm.levelManager.NextFileNumber()
+	newSSTPath := filepath.Join(lsm.dirPath, fmt.Sprintf("%04d.sst", newSSTNum))
+	outputWriter, err := sstable.NewWriter(newSSTPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create output writer: %w", err)
+	}
+
+	// 4. 核心归并循环
+	for {
+		// 4a. 弹出堆顶 (这是全局最小键，且是*最新*版本)
+		item, ok := h.PopAndRefill()
+		if !ok {
+			break // 堆已空，压缩完成
+		}
+
+		// 4b. !! 关键去重逻辑 !!
+		// h.Less() 保证了我们 Pop 出来的是*最新*版本。
+		// 我们现在需要丢弃所有*旧*版本 (即堆中所有同key的条目)。
+		for {
+			next, ok := h.Peek()
+			if !ok {
+				break // 堆空了
+			}
+
+			// 如果下一个键和当前键不同，停止去重
+			if bytes.Compare(next.key, item.key) != 0 {
+				break
+			}
+
+			// 键相同，说明是旧版本，弹出并丢弃
+			h.PopAndRefill()
+		}
+
+		// 4c. !! 关键墓碑逻辑 !!
+		// 经过 4b，我们手上拿的是 `item.key` 的唯一、最新的版本。
+		// 如果这个最新版本是“墓碑”，我们就*不*把它写入新文件。
+		// 这就同时删除了 "墓碑" 和所有它覆盖的旧数据。
+		if item.isTombstone {
+			continue // 丢弃
+		}
+
+		// 4d. !! 关键：输出切分 (Split Output) !!
+		// 如果当前 SSTable 写入过大，则关闭它，创建新的
+		if outputWriter.CurrentSize() > targetSSTableSize {
+			if err := outputWriter.Close(); err != nil {
+				return nil, err
+			}
+			// 为刚写完的文件创建 Reader
+			reader, err := sstable.NewReader(newSSTPath)
+			if err != nil {
+				return nil, err
+			}
+			newReaders = append(newReaders, reader)
+
+			// 创建一个新的 Writer
+			newSSTNum = lsm.levelManager.NextFileNumber()
+			newSSTPath = filepath.Join(lsm.dirPath, fmt.Sprintf("%04d.sst", newSSTNum))
+			outputWriter, err = sstable.NewWriter(newSSTPath)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		// 4e. 写入数据
+		outputWriter.Write(item.key, item.value, item.isTombstone)
+		// lastKeyWritten = item.key
+	}
+
+	// 关闭最后一个 Writer
+	if outputWriter.CurrentSize() > 0 {
+		if err := outputWriter.Close(); err != nil {
+			return nil, err
+		}
+		reader, err := sstable.NewReader(newSSTPath)
+		if err != nil {
+			return nil, err
+		}
+		newReaders = append(newReaders, reader)
+	}
+
+	return newReaders, nil
+}
+
+// compactorWorker (压缩器的主循环)
+func (lsm *LSM) compactorWorker() {
+	for {
+		select {
+		case <-lsm.stopChan:
+			return
+		case <-lsm.compactionTrigger:
+			// 开始检查压缩任务
+			// 使用 for 循环处理 级联压缩
+			// 只要 levelManager 能找到任务就一直做下去
+			for {
+				task := lsm.levelManager.FindCompactionTask()
+				if task == nil {
+					break
+				}
+
+				// 执行压缩（runCompaction(task)）
+				newReaders, err := lsm.runCompaction(task)
+				if err != nil {
+					fmt.Printf("ERROR: failed to run compaction: %v\n", err)
+					// TODO: RETRY
+					continue
+				}
+
+				// 原子地提交结果
+				obsoleteReaders, err := lsm.levelManager.ApplyCompactionResult(task, newReaders)
+				if err != nil {
+					fmt.Printf("ERROR: failed to apply compaction: %v\n", err)
+					// TODO: 需要关闭newReader 并删除文件
+					continue
+				}
+
+				// 物理清除
+				for _, reader := range obsoleteReaders {
+					reader.Close()
+					if err := os.Remove(reader.FilePath()); err != nil {
+						// 记录错误，但不停止
+						fmt.Printf("ERROR: failed to remove obsolete sstable %s: %v\n", reader.FilePath(), err)
+					}
+				}
+				// 压缩完成，立即再次检查是否有级联任务
+			}
+		}
+	}
+}
+
+// 触发压缩的辅助函数 (非阻塞)
+func (lsm *LSM) triggerCompaction() {
+	select {
+	case lsm.compactionTrigger <- struct{}{}:
+		// 信号发送成功
+	default:
+		// 如果触发器已经有一个信号了 (compactor 还没来得及处理)
+		// 那就没必要再发了，跳过即可
 	}
 }
 
@@ -306,6 +489,7 @@ func (lsm *LSM) Get(key []byte) ([]byte, bool, error) {
 	// 查 L0 SSTables (从新到旧)
 	// l0Readers 是一个快照
 	l0Readers := lsm.levelManager.GetL0Readers()
+	// (TODO: LevelManager 需要 GetLevelReaders(level int))
 
 	lsm.lock.RUnlock() // Get 的主要锁在这里释放
 	// 我们在 L0 列表的末尾追加新文件，所以倒序遍历
@@ -324,7 +508,13 @@ func (lsm *LSM) Get(key []byte) ([]byte, bool, error) {
 		}
 	}
 
-	// (TODO) 查询 L1 ... LN (目前 L1+ 为空)
+	// TODO:
+	// a. 修改 LevelManager, 添加 GetLevelReaders(level)
+	// b. 在 lsm.Get 中循环 L1...LN
+	// c. 在每一层 (level > 0) 中:
+	//    i.   使用二分查找 (sort.Search) 找到 *可能* 包含 key 的那个 reader
+	//    ii.  (通过比较 key 和 reader.MinKey() / reader.MaxKey())
+	//    iii. 如果找到，才调用 reader.Get(key)
 
 	// 未找到
 	return nil, false, nil
