@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -464,10 +465,26 @@ func (lsm *LSM) Delete(key []byte) error {
 // 返回 (value, found)
 func (lsm *LSM) Get(key []byte) ([]byte, bool, error) {
 	lsm.lock.RLock()
-	defer lsm.lock.RUnlock()
 
 	// 查 Active Memtable (最新)
 	val, tomb, found := lsm.activeMemtable.Get(key)
+
+	// 查 Immutable Memtable (次新)
+	if !found && lsm.immutableMemtable != nil {
+		val, tomb, found = lsm.immutableMemtable.Get(key)
+	}
+
+	// 获取所有SSTable的“快照”
+	// 我们在释放锁 *之前* 获取快照，以保证
+	// Memtable 和 SSTable 之间的一致性。
+	snapshot := lsm.levelManager.GetSnapshot()
+
+	lsm.lock.RUnlock()
+
+	defer snapshot.Close()
+
+	// 接下来只操作快照
+
 	if found {
 		if tomb {
 			return nil, false, nil // 已被删除
@@ -475,29 +492,16 @@ func (lsm *LSM) Get(key []byte) ([]byte, bool, error) {
 		return val, true, nil
 	}
 
-	// 查 Immutable Memtable (次新)
-	if lsm.immutableMemtable != nil {
-		val, tomb, found = lsm.immutableMemtable.Get(key)
-		if found {
-			if tomb {
-				return nil, false, nil
-			}
-			return val, true, nil
-		}
-	}
-
 	// 查 L0 SSTables (从新到旧)
 	// l0Readers 是一个快照
-	l0Readers := lsm.levelManager.GetL0Readers()
-	// (TODO: LevelManager 需要 GetLevelReaders(level int))
+	l0Readers := snapshot.levels[0]
 
-	lsm.lock.RUnlock() // Get 的主要锁在这里释放
 	// 我们在 L0 列表的末尾追加新文件，所以倒序遍历
 	for i := len(l0Readers) - 1; i >= 0; i-- {
 		reader := l0Readers[i]
 		val, tomb, found, err := reader.Get(key)
 		if err != nil {
-			return nil, false, fmt.Errorf("error reading sstable %d: %w", i, err)
+			return nil, false, fmt.Errorf("error reading L0 sstable %d: %w", i, err)
 		}
 
 		if found {
@@ -508,13 +512,47 @@ func (lsm *LSM) Get(key []byte) ([]byte, bool, error) {
 		}
 	}
 
-	// TODO:
-	// a. 修改 LevelManager, 添加 GetLevelReaders(level)
-	// b. 在 lsm.Get 中循环 L1...LN
-	// c. 在每一层 (level > 0) 中:
-	//    i.   使用二分查找 (sort.Search) 找到 *可能* 包含 key 的那个 reader
-	//    ii.  (通过比较 key 和 reader.MinKey() / reader.MaxKey())
-	//    iii. 如果找到，才调用 reader.Get(key)
+	for level := 1; level < maxLevels; level++ {
+		readers := snapshot.levels[level]
+
+		if len(readers) == 0 {
+			continue // 本层空
+		}
+
+		// 在 L1+ 中查找
+		// L1+ 的 SSTable 按 minKey 顺序， 且互补重叠
+		// 二分
+		i := sort.Search(len(readers), func(i int) bool {
+			return bytes.Compare(readers[i].MaxKey(), key) >= 0
+		})
+
+		// 检查是否找到了
+		if i >= len(readers) {
+			// key 比本层所有文件的 maxKey 都大
+			continue
+		}
+
+		// 找到了第 i 个文件 且 i.maxKey >= key
+		// 检查 MinKey <= key
+		// 如果 MinKey > key，说明 key 掉在缝隙里，本层不存在
+		reader := readers[i]
+		if bytes.Compare(reader.MinKey(), key) <= 0 {
+			// 找到了唯一的目标文件
+			val, tomb, found, err := reader.Get(key)
+			if err != nil {
+				return nil, false, fmt.Errorf("error reading L%d sstable: %W", i, err)
+			}
+			if found {
+				if tomb {
+					return nil, false, nil // 已被删除
+				}
+				return val, true, nil
+			}
+			// (如果在这个文件中没找到，说明它在LSM-Tree中不存在，
+			//  因为 L1+ 不重叠，它也不可能在更低层)
+			// (但它可能在下一层，所以不立即返回)
+		}
+	}
 
 	// 未找到
 	return nil, false, nil

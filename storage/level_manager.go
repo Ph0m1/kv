@@ -40,6 +40,36 @@ type LevelManager struct {
 	nextFileNum int
 }
 
+// levelSnapshot 提供了 Get() 操作所需的所有SSTable的
+// 一个一致的、时间点(point-in-time)的视图
+type levelSnapshot struct {
+	levels [][]*sstable.Reader
+}
+
+// Close 释放快照持有的所有 Reader
+func (s *levelSnapshot) Close() {
+	// do nothing
+}
+
+// GetSnapshot 获取所有层级的原子快照
+func (lm *LevelManager) GetSnapshot() *levelSnapshot {
+	lm.lock.RLock() // <-- 获取读锁
+	defer lm.lock.RUnlock()
+
+	snap := &levelSnapshot{
+		levels: make([][]*sstable.Reader, maxLevels),
+	}
+
+	for level, readers := range lm.levels {
+		// 必须返回一个 *副本*，以防止 Compactor 修改
+		// 正在被 Get() 使用的切片。
+		snap.levels[level] = make([]*sstable.Reader, len(readers))
+		copy(snap.levels[level], readers)
+	}
+
+	return snap
+}
+
 // NewLevelManager 创建或加载层级管理器
 func NewLevelManager(dirPath string) (*LevelManager, error) {
 	lm := &LevelManager{
