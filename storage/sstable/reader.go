@@ -283,3 +283,8 @@ func (r *Reader) Close() error {
 func (r *Reader) FilePath() string {
 	return r.filePath
 }
+
+// FileSize 返回SSTable的物理文件大小
+func (r *Reader) FileSize() int64 {
+    return r.fileSize
+}

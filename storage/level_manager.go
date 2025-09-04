@@ -16,6 +16,11 @@ import (
 const (
 	maxLevels           = 7
 	l0CompactionTrigger = 4 // 当 L0 的文件达到 4 个时，触发 L0 -> L1 压缩
+
+	// L1 的目标大小 (例如 10MB)
+	baseLevelSize = 10 * 1024 * 1024
+	// L_N+1 是 L_N 的 10 倍
+	levelSizeMultiplier = 10
 )
 
 // 一个压缩任务
@@ -162,8 +167,25 @@ func (lm *LevelManager) FindCompactionTask() *CompactionTask {
 		l0Files := make([]*sstable.Reader, len(lm.levels[0]))
 		copy(l0Files, lm.levels[0])
 
-		// (TODO: 还需要选择 L1 中与 L0 键范围重叠的文件)
-		// (目前 L1 为空，我们暂时简化)
+		// 找出 L0 文件的总键范围
+		var minKey, maxKey []byte
+		for _, r := range l0Files {
+			if minKey == nil || bytes.Compare(r.MinKey(), minKey) < 0 {
+				minKey = r.MinKey()
+			}
+			if maxKey == nil || bytes.Compare(r.MaxKey(), maxKey) > 0 {
+				maxKey = r.MaxKey()
+			}
+		}
+
+		// 选择 L1 中与 L0 总范围重叠的文件
+		l1Files := lm.findOverlappingFiles(1, minKey, maxKey)
+
+		// 为了让 'compactor_heap' 正确工作 (最新版本优先)，
+		// L0 的文件 (索引更大) 必须在 L1 文件之后。
+		inputFiles := make([]*sstable.Reader, 0, len(l0Files)+len(l1Files))
+		inputFiles = append(inputFiles, l1Files...)
+		inputFiles = append(inputFiles, l0Files...)
 
 		return &CompactionTask{
 			Level:       0,
@@ -173,10 +195,65 @@ func (lm *LevelManager) FindCompactionTask() *CompactionTask {
 	}
 
 	// 策略 2: L_N -> L_N+1 压缩 (级联压缩)
-	// (TODO: 检查 L1+, L2+ ... 的大小，看是否需要压缩到下一层)
+	for level := 1; level < maxLevels-1; level++ {
+		// 如果没满，则检查下一层
+		if lm.levelTotalSize(level) < lm.levelTargetSize(level) {
+			continue
+		}
+
+		// 本层已满，需要压缩到下一层
+
+		// 只选择 L_N 中的 *一个* 文件来“推送”
+		// (策略：选择最老的，即列表中的第一个)
+		// (L1+ 列表是按 MinKey 排序的)
+		fileToCompact := lm.levels[level][0]
+
+		// 找到 L_N+1 中与这个文件重叠的所有文件
+		lNp1Files := lm.findOverlappingFiles(
+			level+1,
+			fileToCompact.MinKey(),
+			fileToCompact.MaxKey(),
+		)
+
+		// 同样，L_N 的文件 (fileToCompact) 必须在 L_N+1 文件之后。
+		inputFiles := make([]*sstable.Reader, 0, 1+len(lNp1Files))
+		inputFiles = append(inputFiles, lNp1Files...)
+		inputFiles = append(inputFiles, fileToCompact)
+
+		return &CompactionTask{
+			Level:       level,
+			OutputLevel: level + 1,
+			InputFiles:  inputFiles,
+		}
+
+	}
 
 	// 没有任务
 	return nil
+}
+
+// findOverlappingFiles 查找指定层级中，与 [minKey, maxKey] 范围重叠的文件
+func (lm *LevelManager) findOverlappingFiles(level int, minKey, maxKey []byte) []*sstable.Reader {
+	if minKey == nil && maxKey == nil {
+		return nil // L0 为空，无需重叠
+	}
+
+	overlapping := make([]*sstable.Reader, 0)
+
+	// L1+ 层的文件是按 MinKey 排序的，我们可以高效查找
+	for _, r := range lm.levels[level] {
+		// "不重叠" 的条件:
+		// 1. 文件的 MaxKey 在 minKey 之前
+		// 2. 文件的 MinKey 在 maxKey 之后
+
+		noOverlap := (bytes.Compare(r.MaxKey(), minKey) < 0) ||
+			(bytes.Compare(r.MinKey(), maxKey) > 0)
+
+		if !noOverlap {
+			overlapping = append(overlapping, r)
+		}
+	}
+	return overlapping
 }
 
 // 临时函数 (仅供 Phase A 测试)
@@ -249,4 +326,27 @@ func removeReaders(a []*sstable.Reader, b []*sstable.Reader) []*sstable.Reader {
 		}
 	}
 	return newSlice
+}
+
+// levelTargetSize 返回一个层级的目标总大小
+func (lm *LevelManager) levelTargetSize(level int) int64 {
+	if level == 0 {
+		// L0 的大小是动态的，由 l0CompactionTrigger (文件数) 控制
+		return 0
+	}
+	size := int64(baseLevelSize)
+	for i := 1; i < level; i++ {
+		size *= levelSizeMultiplier
+	}
+	return size
+}
+
+// levelTotalSize 返回一个层级中所有文件的总大小
+func (lm *LevelManager) levelTotalSize(level int) int64 {
+	var total int64
+	// 被 FindCompactionTask 调用且已持有锁
+	for _, reader := range lm.levels[level] {
+		total += reader.FileSize()
+	}
+	return total
 }
