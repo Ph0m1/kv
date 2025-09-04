@@ -339,8 +339,8 @@ func (lsm *LSM) compactorWorker() {
 				newReaders, err := lsm.runCompaction(task)
 				if err != nil {
 					fmt.Printf("ERROR: failed to run compaction: %v\n", err)
-					// TODO: RETRY
-					continue
+					// RETRY
+					break
 				}
 
 				// 原子地提交结果
@@ -348,7 +348,15 @@ func (lsm *LSM) compactorWorker() {
 				if err != nil {
 					fmt.Printf("ERROR: failed to apply compaction: %v\n", err)
 					// TODO: 需要关闭newReader 并删除文件
-					continue
+					fmt.Println("ROLLBACK: cleaning up newly create orphan files...")
+					for _, r := range newReaders {
+						r.Close()
+						if errRem := os.Remove(r.FilePath()); errRem != nil {
+							fmt.Printf("ERROR: failed to remove orphan file %s: %v\n",
+								r.FilePath(), errRem)
+						}
+					}
+					break
 				}
 
 				// 物理清除
