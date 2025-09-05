@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+package kvpb;
+
+option go_package = "github.com/ph0m1/kv/pkg/proto";
+
+// KVService 定义键值存储服务接口
+service KVService {
+  // Get 获取键对应的值
+  rpc Get(GetRequest) returns (GetResponse) {}
+  
+  // Put 设置键值对
+  rpc Put(PutRequest) returns (PutResponse) {}
+  
+  // Delete 删除键
+  rpc Delete(DeleteRequest) returns (DeleteResponse) {}
+  
+  // Scan 范围扫描
+  rpc Scan(ScanRequest) returns (stream ScanResponse) {}
+  
+  // BatchGet 批量获取
+  rpc BatchGet(BatchGetRequest) returns (BatchGetResponse) {}
+  
+  // BatchPut 批量写入
+  rpc BatchPut(BatchPutRequest) returns (BatchPutResponse) {}
+}
+
+// GetRequest 获取请求
+message GetRequest {
+  bytes key = 1;
+}
+
+// GetResponse 获取响应
+message GetResponse {
+  bytes value = 1;
+  bool found = 2;
+  string error = 3;
+}
+
+// PutRequest 写入请求
+message PutRequest {
+  bytes key = 1;
+  bytes value = 2;
+}
+
+// PutResponse 写入响应
+message PutResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// DeleteRequest 删除请求
+message DeleteRequest {
+  bytes key = 1;
+}
+
+// DeleteResponse 删除响应
+message DeleteResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// ScanRequest 扫描请求
+message ScanRequest {
+  bytes start_key = 1;  // 起始键（包含）
+  bytes end_key = 2;    // 结束键（不包含）
+  int32 limit = 3;      // 限制返回数量，0表示不限制
+}
+
+// ScanResponse 扫描响应（流式）
+message ScanResponse {
+  bytes key = 1;
+  bytes value = 2;
+  string error = 3;
+}
+
+// BatchGetRequest 批量获取请求
+message BatchGetRequest {
+  repeated bytes keys = 1;
+}
+
+// KeyValue 键值对
+message KeyValue {
+  bytes key = 1;
+  bytes value = 2;
+  bool found = 3;
+}
+
+// BatchGetResponse 批量获取响应
+message BatchGetResponse {
+  repeated KeyValue items = 1;
+  string error = 2;
+}
+
+// BatchPutRequest 批量写入请求
+message BatchPutRequest {
+  repeated KeyValue items = 1;
+}
+
+// BatchPutResponse 批量写入响应
+message BatchPutResponse {
+  bool success = 1;
+  string error = 2;
+}
