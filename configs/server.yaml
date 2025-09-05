@@ -1,0 +1,93 @@
+# KV存储服务器配置
+
+server:
+  # 服务器监听地址
+  listen_addr: "0.0.0.0:9090"
+  # 节点ID
+  node_id: "node-1"
+  # 数据目录
+  data_dir: "./data"
+
+# 存储引擎配置
+storage:
+  # Memtable大小限制 (64MB)
+  memtable_size_limit: 67108864
+  # SSTable目标大小 (64MB)
+  sstable_size: 67108864
+  # Data Block大小 (4KB)
+  block_size: 4096
+  # WAL同步策略: always, periodic, none
+  wal_sync: "always"
+  # 压缩策略
+  compaction:
+    # L0触发压缩的文件数
+    l0_trigger: 4
+    # 基础层大小 (10MB)
+    base_level_size: 10485760
+    # 层级大小倍数
+    level_multiplier: 10
+    # 最大层级数
+    max_levels: 7
+
+# 集群配置
+cluster:
+  # 是否启用集群模式
+  enabled: false
+  # 集群节点列表
+  peers:
+    - "node-1:9090"
+    - "node-2:9090"
+    - "node-3:9090"
+
+# Raft配置
+raft:
+  # 心跳间隔 (ms)
+  heartbeat_interval: 100
+  # 选举超时 (ms)
+  election_timeout: 1000
+  # 快照间隔 (条目数)
+  snapshot_interval: 10000
+  # 日志目录
+  log_dir: "./data/raft"
+
+# 分片配置
+sharding:
+  # 是否启用分片
+  enabled: false
+  # 虚拟节点数
+  virtual_nodes: 150
+  # 副本数
+  replication_factor: 3
+
+# 日志配置
+logging:
+  # 日志级别: debug, info, warn, error
+  level: "info"
+  # 日志格式: json, console
+  format: "console"
+  # 日志文件路径
+  file: "./logs/server.log"
+  # 日志文件最大大小 (MB)
+  max_size: 100
+  # 保留的旧日志文件数
+  max_backups: 3
+  # 保留天数
+  max_age: 7
+
+# 监控配置
+metrics:
+  # 是否启用监控
+  enabled: true
+  # Prometheus监听地址
+  prometheus_addr: "0.0.0.0:9091"
+
+# 性能配置
+performance:
+  # 最大并发连接数
+  max_connections: 10000
+  # 读缓冲区大小 (KB)
+  read_buffer_size: 4
+  # 写缓冲区大小 (KB)
+  write_buffer_size: 4
+  # 工作线程数 (0表示使用CPU核心数)
+  worker_threads: 0
