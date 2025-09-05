@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ph0m1/kv/storage/sstable"
+	"github.com/ph0m1/kv/pkg/storage/sstable"
 )
 
 const (
