@@ -13,41 +13,49 @@ kv/
 │       └── main.go
 │
 ├── pkg/                          # 公共库
-│   ├── storage/                  # 存储引擎层 (LSM-Tree)
+│   ├── storage/                  # 存储引擎层 (LSM-Tree) ✅
 │   │   ├── lsm.go               # LSM引擎主逻辑
 │   │   ├── memtable.go          # Memtable (SkipList)
 │   │   ├── wal.go               # Write-Ahead Log
-│   │   ├── compaction.go        # 压缩逻辑
+│   │   ├── compactor_heap.go    # 压缩堆
 │   │   ├── level_manager.go     # 多层级管理
+│   │   ├── interface.go         # 存储接口
 │   │   └── sstable/             # SSTable实现
 │   │       ├── reader.go
 │   │       ├── writer.go
 │   │       ├── iterator.go
 │   │       └── interface.go
 │   │
-│   ├── server/                   # 服务器层
+│   ├── server/                   # 服务器层 ✅
 │   │   ├── server.go            # gRPC服务器
-│   │   ├── handler.go           # 请求处理器
-│   │   └── middleware.go        # 中间件
+│   │   └── interceptor.go       # 拦截器
 │   │
-│   ├── client/                   # 客户端层
-│   │   ├── client.go            # gRPC客户端
-│   │   └── pool.go              # 连接池
+│   ├── client/                   # 客户端层 ✅
+│   │   └── client.go            # gRPC客户端
 │   │
-│   ├── cluster/                  # 集群管理层
+│   ├── sharding/                 # 分片层 ✅
+│   │   ├── hash.go              # 一致性哈希
+│   │   └── manager.go           # 分片管理器
+│   │
+│   ├── common/                   # 通用模块 ✅
+│   │   ├── config.go            # 配置管理
+│   │   ├── errors.go            # 错误定义
+│   │   └── logger.go            # 日志工具
+│   │
+│   ├── proto/                    # Protocol Buffers ✅
+│   │   ├── kv.proto             # 接口定义
+│   │   ├── kv.pb.go             # 生成的代码
+│   │   └── kv_grpc.pb.go        # 生成的gRPC代码
+│   │
+│   ├── cluster/                  # 集群管理层 ⏳
 │   │   ├── node.go              # 节点管理
 │   │   ├── membership.go        # 成员管理
 │   │   └── discovery.go         # 服务发现
 │   │
-│   ├── replication/              # 复制层
+│   ├── replication/              # 复制层 ⏳
 │   │   ├── raft.go              # Raft共识协议
 │   │   ├── log.go               # 复制日志
 │   │   └── snapshot.go          # 快照管理
-│   │
-│   ├── sharding/                 # 分片层
-│   │   ├── hash.go              # 一致性哈希
-│   │   ├── router.go            # 请求路由
-│   │   └── migration.go         # 数据迁移
 │   │
 │   ├── proto/                    # Protocol Buffers定义
 │   │   ├── kv.proto             # KV服务接口
@@ -118,12 +126,12 @@ kv/
 
 ## 开发路线
 
-### Phase 1: 重构存储引擎 ✓
-- [x] LSM-Tree基础实现
-- [x] SkipList Memtable
-- [x] WAL持久化
-- [x] SSTable读写
-- [x] 多层级压缩
+### Phase 1: 重构存储引擎 
+- [ ] LSM-Tree基础实现
+- [ ] SkipList Memtable
+- [ ] WAL持久化
+- [ ] SSTable读写
+- [ ] 多层级压缩
 
 ### Phase 2: 网络层
 - [ ] gRPC服务定义
