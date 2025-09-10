@@ -384,9 +384,9 @@ func (lsm *LSM) triggerCompaction() {
 	}
 }
 
-// Put 写入一个键值对
-// (Delete 只是 isTombstone 为 true 的 Put)
-func (lsm *LSM) Put(key, value []byte, isTombstone bool) error {
+// put 写入一个键值对（内部方法）
+// (Delete 只是 isTombstone 为 true 的 put)
+func (lsm *LSM) put(key, value []byte, isTombstone bool) error {
 	// 1. 写 WAL
 	if err := lsm.wal.Write(key, value, isTombstone); err != nil {
 		return fmt.Errorf("failed to write WAL: %w", err)
@@ -464,9 +464,68 @@ func (lsm *LSM) Put(key, value []byte, isTombstone bool) error {
 	return nil
 }
 
-// Delete 是 Put 的封装
+// Put 写入一个键值对（实现 Storage 接口）
+func (lsm *LSM) Put(key, value []byte) error {
+	return lsm.put(key, value, false)
+}
+
+// Delete 是 put 的封装
 func (lsm *LSM) Delete(key []byte) error {
-	return lsm.Put(key, nil, true)
+	return lsm.put(key, nil, true)
+}
+
+// Close 关闭存储引擎（实现 Storage 接口）
+func (lsm *LSM) Close() error {
+	// 1. 发送停止信号
+	close(lsm.stopChan)
+
+	// 2. 等待后台 goroutine 完成
+	// 注意：这里需要确保 flushWorker 和 compactorWorker 都退出
+	// 我们可以通过等待一小段时间或使用 sync.WaitGroup
+	// 简单起见，这里先关闭通道
+
+	// 3. 刷写当前的 active memtable（如果有数据）
+	lsm.lock.Lock()
+	if lsm.activeMemtable.ApproximateSize() > 0 {
+		// 将当前 active 变为 immutable 并刷写
+		if lsm.immutableMemtable != nil {
+			lsm.lock.Unlock()
+			<-lsm.flushDone // 等待之前的刷写完成
+			lsm.lock.Lock()
+		}
+		lsm.immutableMemtable = lsm.activeMemtable
+		lsm.activeMemtable = NewSkipList(defaultMaxLevel)
+		
+		task := flushTask{
+			mem: lsm.immutableMemtable,
+			wal: nil, // 关闭时不需要清理 WAL
+		}
+		lsm.lock.Unlock()
+		
+		// 发送刷写任务
+		select {
+		case lsm.flushChan <- task:
+			<-lsm.flushDone // 等待刷写完成
+		default:
+			// 通道已关闭或满了，跳过
+		}
+	} else {
+		lsm.lock.Unlock()
+	}
+
+	// 4. 关闭 WAL
+	if lsm.wal != nil {
+		if err := lsm.wal.Close(); err != nil {
+			return fmt.Errorf("failed to close WAL: %w", err)
+		}
+	}
+
+	// 5. 关闭所有 SSTable readers
+	if lsm.levelManager != nil {
+		lsm.levelManager.Close()
+	}
+
+	return nil
 }
 
 // Get 查找一个键

@@ -350,3 +350,18 @@ func (lm *LevelManager) levelTotalSize(level int) int64 {
 	}
 	return total
 }
+
+// Close 关闭所有层级中的 SSTable readers
+func (lm *LevelManager) Close() {
+	lm.lock.Lock()
+	defer lm.lock.Unlock()
+
+	for level := 0; level < maxLevels; level++ {
+		for _, reader := range lm.levels[level] {
+			if reader != nil {
+				reader.Close()
+			}
+		}
+		lm.levels[level] = nil
+	}
+}
