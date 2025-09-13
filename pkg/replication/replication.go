@@ -1,6 +1,7 @@
 package replication
 
 import (
+	"fmt"
 	"sync"
 )
 
@@ -266,19 +267,12 @@ func (rf *Raft) tryUpdateCommitIndex() {
 	}
 }
 
-// sendAppendEntries 发送AppendEntries RPC（模拟）
+// sendAppendEntries 发送AppendEntries RPC
 func (rf *Raft) sendAppendEntries(nodeID string, req *AppendEntriesRequest) (*AppendEntriesResponse, error) {
-	// TODO: 实现真实的RPC调用
-	// 这里暂时返回一个模拟响应
-
-	// 在实际实现中，这里应该通过gRPC调用远程节点的AppendEntries方法
-	// 例如：
-	// client := rf.getPeerClient(nodeID)
-	// return client.AppendEntries(context.Background(), req)
-
-	// 模拟响应
-	return &AppendEntriesResponse{
-		Term:    req.Term,
-		Success: true,
-	}, nil
+	address, exists := rf.config.Peers[nodeID]
+	if !exists {
+		return nil, fmt.Errorf("peer %s not found", nodeID)
+	}
+	
+	return rf.rpcClient.AppendEntries(nodeID, address, req)
 }

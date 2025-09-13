@@ -102,3 +102,53 @@ message BatchPutResponse {
   bool success = 1;
   string error = 2;
 }
+
+// ============= Raft 共识协议 =============
+
+// RaftService 定义 Raft 共识服务接口
+service RaftService {
+  // RequestVote 请求投票
+  rpc RequestVote(RequestVoteRequest) returns (RequestVoteResponse) {}
+  
+  // AppendEntries 追加日志（心跳）
+  rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse) {}
+}
+
+// LogEntry 日志条目
+message LogEntry {
+  uint64 index = 1;
+  uint64 term = 2;
+  bytes command = 3;
+}
+
+// RequestVoteRequest 投票请求
+message RequestVoteRequest {
+  uint64 term = 1;
+  string candidate_id = 2;
+  uint64 last_log_index = 3;
+  uint64 last_log_term = 4;
+}
+
+// RequestVoteResponse 投票响应
+message RequestVoteResponse {
+  uint64 term = 1;
+  bool vote_granted = 2;
+}
+
+// AppendEntriesRequest 追加日志请求
+message AppendEntriesRequest {
+  uint64 term = 1;
+  string leader_id = 2;
+  uint64 prev_log_index = 3;
+  uint64 prev_log_term = 4;
+  repeated LogEntry entries = 5;
+  uint64 leader_commit = 6;
+}
+
+// AppendEntriesResponse 追加日志响应
+message AppendEntriesResponse {
+  uint64 term = 1;
+  bool success = 2;
+  uint64 conflict_term = 3;
+  uint64 conflict_index = 4;
+}

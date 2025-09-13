@@ -43,6 +43,9 @@ type Raft struct {
 
 	// 日志
 	logger Logger
+
+	// RPC 客户端
+	rpcClient *RPCClient
 }
 
 // Logger 日志接口
@@ -96,6 +99,7 @@ func NewRaft(config *Config, applyCh chan ApplyMsg) (*Raft, error) {
 		applyCh:     applyCh,
 		stopCh:      make(chan struct{}),
 		logger:      &defaultLogger{},
+		rpcClient:   NewRPCClient(),
 	}
 
 	// 初始化日志（索引从1开始，0是哨兵）

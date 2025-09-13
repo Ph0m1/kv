@@ -1,6 +1,7 @@
 package replication
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 )
@@ -135,19 +136,12 @@ func (rf *Raft) RequestVote(req *RequestVoteRequest) (*RequestVoteResponse, erro
 	return resp, nil
 }
 
-// sendRequestVote 发送投票请求（模拟RPC调用）
+// sendRequestVote 发送投票请求
 func (rf *Raft) sendRequestVote(nodeID string, req *RequestVoteRequest) (*RequestVoteResponse, error) {
-	// TODO: 实现真实的RPC调用
-	// 这里暂时返回一个模拟响应
+	address, exists := rf.config.Peers[nodeID]
+	if !exists {
+		return nil, fmt.Errorf("peer %s not found", nodeID)
+	}
 	
-	// 在实际实现中，这里应该通过gRPC调用远程节点的RequestVote方法
-	// 例如：
-	// client := rf.getPeerClient(nodeID)
-	// return client.RequestVote(context.Background(), req)
-	
-	// 模拟响应（用于测试）
-	return &RequestVoteResponse{
-		Term:        req.Term,
-		VoteGranted: true,
-	}, nil
+	return rf.rpcClient.RequestVote(nodeID, address, req)
 }
