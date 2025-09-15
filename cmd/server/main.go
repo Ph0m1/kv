@@ -16,6 +16,7 @@ var (
 	configFile = flag.String("config", "configs/server.yaml", "配置文件路径")
 	dataDir    = flag.String("data", "", "数据目录（覆盖配置文件）")
 	listenAddr = flag.String("listen", "", "监听地址（覆盖配置文件）")
+	enableRaft = flag.Bool("raft", false, "启用 Raft 共识协议")
 )
 
 func main() {
@@ -60,10 +61,27 @@ func main() {
 
 	// 创建服务器
 	logger.Info("Creating gRPC server...")
-	srv, err := server.NewServer(config, store)
-	if err != nil {
-		logger.Error("Failed to create server: %v", err)
-		os.Exit(1)
+	var srv interface {
+		Start() error
+		Stop() error
+	}
+	
+	if *enableRaft {
+		logger.Info("Raft mode enabled")
+		raftSrv, err := server.NewRaftServer(config, store)
+		if err != nil {
+			logger.Error("Failed to create Raft server: %v", err)
+			os.Exit(1)
+		}
+		srv = raftSrv
+	} else {
+		logger.Info("Standalone mode")
+		stdSrv, err := server.NewServer(config, store)
+		if err != nil {
+			logger.Error("Failed to create server: %v", err)
+			os.Exit(1)
+		}
+		srv = stdSrv
 	}
 	logger.Info("gRPC server created")
 
