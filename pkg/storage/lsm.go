@@ -66,8 +66,8 @@ func NewLSM(dirPath string) (*LSM, error) {
 		dirPath:           dirPath,
 		memtableSizeLimit: defaultMemtableSizeLimit,
 		flushChan:         make(chan flushTask, 1), // 缓冲为1
-		flushDone:         make(chan struct{}),
-		compactionTrigger: make(chan struct{}),
+		flushDone:         make(chan struct{}, 1),  // 缓冲为1，避免死锁
+		compactionTrigger: make(chan struct{}, 1),  // 缓冲为1
 		stopChan:          make(chan struct{}),
 	}
 
@@ -476,15 +476,8 @@ func (lsm *LSM) Delete(key []byte) error {
 
 // Close 关闭存储引擎（实现 Storage 接口）
 func (lsm *LSM) Close() error {
-	// 1. 发送停止信号
-	close(lsm.stopChan)
-
-	// 2. 等待后台 goroutine 完成
-	// 注意：这里需要确保 flushWorker 和 compactorWorker 都退出
-	// 我们可以通过等待一小段时间或使用 sync.WaitGroup
-	// 简单起见，这里先关闭通道
-
-	// 3. 刷写当前的 active memtable（如果有数据）
+	// 1. 刷写当前的 active memtable（如果有数据）
+	// 注意：必须在关闭 stopChan 之前完成，否则 worker 会退出
 	lsm.lock.Lock()
 	if lsm.activeMemtable.ApproximateSize() > 0 {
 		// 将当前 active 变为 immutable 并刷写
@@ -502,16 +495,18 @@ func (lsm *LSM) Close() error {
 		}
 		lsm.lock.Unlock()
 		
-		// 发送刷写任务
-		select {
-		case lsm.flushChan <- task:
-			<-lsm.flushDone // 等待刷写完成
-		default:
-			// 通道已关闭或满了，跳过
-		}
+		// 发送刷写任务并等待完成
+		lsm.flushChan <- task
+		<-lsm.flushDone // 等待刷写完成
 	} else {
 		lsm.lock.Unlock()
 	}
+
+	// 2. 发送停止信号（在刷写完成后）
+	close(lsm.stopChan)
+	
+	// 3. 给 worker 一点时间退出
+	time.Sleep(100 * time.Millisecond)
 
 	// 4. 关闭 WAL
 	if lsm.wal != nil {

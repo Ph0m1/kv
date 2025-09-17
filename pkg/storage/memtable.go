@@ -77,7 +77,7 @@ func NewSkipList(maxLevel int) *SkipList {
 // 只在持有写锁(sl.mu.Lock())时调用
 func (sl *SkipList) randomLevel() int {
 	level := 1
-	sl.mu.Lock()
+	// 注意：调用者必须已经持有锁
 	for sl.rand.Float64() < randomLevel && level < sl.maxLevel {
 		level++
 	}
@@ -93,7 +93,7 @@ func (sl *SkipList) Get(key []byte) ([]byte, bool, bool) {
 	current := sl.head
 
 	// 从高层开始，逐层向下查找
-	for i := sl.currentLevel; i >= 0; i-- {
+	for i := sl.currentLevel - 1; i >= 0; i-- {
 		// 向右移动
 		// 下一个节点键值小于key
 		for current.forward[i] != nil && bytes.Compare(current.forward[i].key, key) < 0 {
@@ -127,6 +127,7 @@ func (sl *SkipList) Put(key []byte, value []byte, isTombstone bool) {
 		for current.forward[i] != nil && bytes.Compare(current.forward[i].key, key) < 0 {
 			current = current.forward[i]
 		}
+		update[i] = current
 	}
 
 	current = current.forward[0]
