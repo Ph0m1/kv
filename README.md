@@ -52,10 +52,15 @@ kv/
 │   │   ├── membership.go        # 成员管理
 │   │   └── discovery.go         # 服务发现
 │   │
-│   ├── replication/              # 复制层 ⏳
-│   │   ├── raft.go              # Raft共识协议
-│   │   ├── log.go               # 复制日志
-│   │   └── snapshot.go          # 快照管理
+│   ├── replication/              # 复制层 ✅
+│   │   ├── raft.go              # Raft核心结构和接口
+│   │   ├── election.go          # Leader选举逻辑
+│   │   ├── replication.go       # 日志复制逻辑
+│   │   ├── types.go             # 类型定义
+│   │   ├── rpc_server.go        # Raft RPC服务端
+│   │   ├── rpc_client.go        # Raft RPC客户端
+│   │   ├── command.go           # 命令编解码
+│   │   └── snapshot.go          # 快照管理 (待实现)
 │   │
 │   ├── proto/                    # Protocol Buffers定义
 │   │   ├── kv.proto             # KV服务接口
@@ -144,10 +149,15 @@ kv/
 - [x] 分片管理器
 - [x] 请求路由
 
-### Phase 4: 复制 ⏳ 待实现
-- [ ] Raft协议
-- [ ] 日志复制
-- [ ] 故障恢复
+### Phase 4: 复制 ✅ 已完成
+- [x] Raft协议核心实现
+- [x] Leader选举
+- [x] 日志复制
+- [x] RPC服务端/客户端
+- [x] 命令编解码
+- [x] 集成到KV服务器
+- [ ] 快照管理 (待实现)
+- [ ] 配置变更 (待实现)
 
 ### Phase 5: 集群管理 ⏳ 待实现
 - [ ] 服务发现
@@ -165,17 +175,42 @@ kv/
 
 ## 快速开始
 
+### 单节点模式
+
 ```bash
 # 编译
 make build
 
-# 启动单节点
-./bin/server -config configs/server.yaml
-
-# 启动集群
-./scripts/deploy.sh cluster
+# 启动单节点服务器
+./bin/server --config configs/server.yaml
 
 # 客户端测试
 ./bin/client set key1 value1
 ./bin/client get key1
 ```
+
+### Raft 集群模式
+
+```bash
+# 生成 protobuf 代码
+make proto
+
+# 启动 3 节点 Raft 集群
+# 节点 1
+./bin/server --config configs/node1.yaml --raft
+
+# 节点 2
+./bin/server --config configs/node2.yaml --raft
+
+# 节点 3
+./bin/server --config configs/node3.yaml --raft
+
+# 客户端连接到 Leader
+./bin/client --addr localhost:8001 set key1 value1
+./bin/client --addr localhost:8001 get key1
+```
+
+详细使用说明请参考：
+- [Raft 使用指南](docs/raft_usage.md)
+- [存储引擎文档](docs/storage.md)
+- [测试文档](docs/testing.md)

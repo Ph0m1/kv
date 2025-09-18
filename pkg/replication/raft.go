@@ -16,6 +16,10 @@ type Raft struct {
 	votedFor    string      // 当前任期投票给了谁
 	log         []*LogEntry // 日志条目数组
 
+	// 快照状态
+	lastSnapshotIndex uint64 // 快照中最后一条日志的索引
+	lastSnapshotTerm  uint64 // 快照中最后一条日志的任期
+
 	// 易失状态（所有服务器）
 	commitIndex uint64 // 已知已提交的最高日志索引
 	lastApplied uint64 // 已应用到状态机的最高日志索引

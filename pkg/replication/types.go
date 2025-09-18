@@ -80,6 +80,7 @@ type Config struct {
 	
 	// 快照配置
 	SnapshotInterval uint64 // 快照间隔（日志条目数）
+	StoragePath      string // 存储路径
 }
 
 // DefaultConfig 返回默认配置
